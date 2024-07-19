@@ -8,30 +8,68 @@ env:
   REGISTRY: docker.io
   IMAGE_NAME: evdog/appwrite
   TAG: ${{ github.event.release.tag_name }}
+  DOCKER_BUILDKIT: 1
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+      fail-fast: false
+
     steps:
-      - name: Checkout the repo
-        uses: actions/checkout@v3
+    - name: Checkout the repo
+      uses: actions/checkout@v3
 
-      - name: Login to DockerHub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Login to DockerHub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
 
-      - name: Build and push
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
+    - name: Cache Docker layers
+      uses: actions/cache@v3
+      with:
+        path: /tmp/.buildx-cache
+        key: ${{ runner.os }}-buildx-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-buildx-
+
+    - name: Build and push
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        platforms: ${{ matrix.platform }}
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}-${{ matrix.platform }}
+        cache-from: type=local,src=/tmp/.buildx-cache
+        cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+    - name: Move cache
+      run: |
+        rm -rf /tmp/.buildx-cache
+        mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+  merge-manifests:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - name: Login to DockerHub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Create and push manifest
+      run: |
+        docker manifest create ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }} \
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}-linux/amd64 \
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}-linux/arm64
+        docker manifest push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
